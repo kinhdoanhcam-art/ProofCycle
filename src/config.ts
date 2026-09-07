@@ -1,0 +1,16 @@
+export const CONTRACT_ADDRESS = (
+  import.meta.env.VITE_CONTRACT_ADDRESS ||
+  '0xcd661Ee97B358948c4B943C8d2B5f4195E54D75E'
+) as `0x${string}`;
+
+export const RUNTIME_EVIDENCE_ADDRESS =
+  '0x50B778A214AD3e83E5eA24Da939636AE2547A5Ab' as `0x${string}`;
+
+export const SOURCE_SHA256 =
+  '5588c08cf5b5e82ad4a1b8776c8c55fa48f8b8ec1f8b923cd2c2c69028c2df69';
+
+export const EXPECTED_CONTRACT_VERSION = '1.1';
+export const EXPLORER_BASE = 'https://explorer-studio.genlayer.com';
+export const CONTRACT_EXPLORER_URL = `${EXPLORER_BASE}/address/${CONTRACT_ADDRESS}`;
+export const RUNTIME_EXPLORER_URL = `${EXPLORER_BASE}/address/${RUNTIME_EVIDENCE_ADDRESS}`;
+export const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000';
