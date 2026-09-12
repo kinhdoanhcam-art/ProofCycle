@@ -1,8 +1,10 @@
 import { createClient } from 'genlayer-js';
 import { studionet } from 'genlayer-js/chains';
-import { ExecutionResult, TransactionStatus } from 'genlayer-js/types';
+import { TransactionStatus } from 'genlayer-js/types';
 import { CONTRACT_ADDRESS, EXPLORER_BASE, CONFIG_OVERRIDE_MISMATCH } from './config';
 import type { Address, Obligation, Period, ProofConfig, Report, TxHash } from './types';
+import { executionOutcome } from './txOutcome';
+export { executionOutcome, executionErrorDetail } from './txOutcome';
 
 const readClient = createClient({ chain: studionet }) as any;
 export const STUDIONET_CHAIN_ID_HEX = `0x${studionet.id.toString(16)}`;
@@ -51,19 +53,6 @@ export async function writeMethod(account: Address, functionName: string, args: 
   return client.writeContract({ address: CONTRACT_ADDRESS, functionName, args, value: 0n });
 }
 
-function executionName(value: any) {
-  return String(value?.txExecutionResultName || value?.executionResultName || value?.transaction?.txExecutionResultName || value?.transaction?.executionResultName || '').toUpperCase();
-}
-
-export function executionOutcome(receipt: any) {
-  for (const source of [receipt, receipt?._transaction]) {
-    const name = executionName(source);
-    if (name === ExecutionResult.FINISHED_WITH_RETURN || name === 'FINISHED_WITH_RETURN') return { ok: true as const, name: 'FINISHED_WITH_RETURN' };
-    if (name === ExecutionResult.FINISHED_WITH_ERROR || name === 'FINISHED_WITH_ERROR') return { ok: false as const, name: 'FINISHED_WITH_ERROR' };
-  }
-  return { ok: null, name: 'EXECUTION_RESULT_UNAVAILABLE' };
-}
-
 export async function waitFinalized(txHash: TxHash) {
   const receipt = await readClient.waitForTransactionReceipt({ hash: txHash, status: TransactionStatus.FINALIZED, interval: 5000, retries: 240, fullTransaction: true });
   if (executionOutcome(receipt).ok !== null) return receipt;
@@ -71,19 +60,6 @@ export async function waitFinalized(txHash: TxHash) {
     const transaction = await readClient.getTransaction({ hash: txHash });
     return { ...receipt, _transaction: transaction };
   } catch { return receipt; }
-}
-
-function deepStrings(value: unknown, output: string[] = []): string[] {
-  if (typeof value === 'string') output.push(value);
-  else if (Array.isArray(value)) value.forEach((item) => deepStrings(item, output));
-  else if (value && typeof value === 'object') Object.values(value as Record<string, unknown>).forEach((item) => deepStrings(item, output));
-  return output;
-}
-
-export function executionErrorDetail(receipt: unknown, fallback = 'Contract execution failed.') {
-  const strings = deepStrings(receipt).map((value) => value.trim()).filter(Boolean);
-  const preferred = strings.find((value) => /only the responsible|creator and responsible|period|remediation|evidence|semantic evaluation|invalid|cannot|too long|empty|deadline|already|error|rollback|usererror/i.test(value));
-  return preferred || fallback;
 }
 
 export function txExplorerUrl(hash: string) { return `${EXPLORER_BASE}/tx/${hash}`; }

@@ -30,9 +30,9 @@ def main():
         raise SystemExit("FAIL: SOURCE_SHA256 does not match production source")
     compile(ast.parse(source.decode("utf-8")), str(CONTRACT), "exec")
 
-    if (manifest["stage"] != "DEPLOYED_FRONTEND_RUNTIME_PENDING" or
+    if (manifest["stage"] != "RUNTIME_VERIFIED_FRONTEND_UPDATE_PENDING" or
             manifest["deployment_address"].lower() != "0x2b37e48581d888cc635fd716456328f1411700d7" or
-            manifest["runtime_verified"] or manifest["semantic_live_verified"] or
+            not manifest["runtime_verified"] or not manifest["semantic_live_verified"] or
             not manifest["frontend_integrated"]):
         raise SystemExit("FAIL: deployment/frontend stage claims do not match available evidence")
     checked = set()
@@ -84,7 +84,7 @@ def main():
             raise SystemExit("FAIL: expected case count not met or a case was skipped/failed")
     if hashlib.sha256(CONTRACT.read_bytes()).hexdigest() != actual:
         raise SystemExit("FAIL: production source changed during verification")
-    print("LOCAL VERIFICATION PASS. Deployed source/profile were observed; live semantic and end-to-end evidence are pending.", flush=True)
+    print("LOCAL VERIFICATION PASS. Live transactions and finalized postconditions are documented in RUNTIME_EVIDENCE.md; this run does not re-execute StudioNet transactions.", flush=True)
 
 
 if __name__ == "__main__":

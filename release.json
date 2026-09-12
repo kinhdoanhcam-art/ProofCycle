@@ -5,11 +5,11 @@
   "contract_path": "contracts/ProofCycle.py",
   "contract_sha256": "6070ef9c487e5fafbb8141e1d6c2722fea94333a218f40a79f9665049b9c7b0b",
   "sdk_release": "v0.2.12",
-  "stage": "DEPLOYED_FRONTEND_RUNTIME_PENDING",
+  "stage": "RUNTIME_VERIFIED_FRONTEND_UPDATE_PENDING",
   "deployment_address": "0x2B37e48581D888cc635Fd716456328F1411700D7",
   "deployment_tx": "0x150cd57a8813681eab65966d04e58a240bc47ef57d9bc5fc982181a70e20f270",
-  "runtime_verified": false,
-  "semantic_live_verified": false,
+  "runtime_verified": true,
+  "semantic_live_verified": true,
   "frontend_integrated": true,
   "behavioral_cases": 50
 }
