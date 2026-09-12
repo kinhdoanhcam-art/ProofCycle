@@ -1,81 +1,54 @@
 import { createClient } from 'genlayer-js';
 import { studionet } from 'genlayer-js/chains';
 import { ExecutionResult, TransactionStatus } from 'genlayer-js/types';
-import { CONTRACT_ADDRESS, EXPLORER_BASE } from './config';
-import type { Address, Obligation, Period, ProofConfig, TxHash } from './types';
+import { CONTRACT_ADDRESS, EXPLORER_BASE, CONFIG_OVERRIDE_MISMATCH } from './config';
+import type { Address, Obligation, Period, ProofConfig, Report, TxHash } from './types';
 
 const readClient = createClient({ chain: studionet }) as any;
 export const STUDIONET_CHAIN_ID_HEX = `0x${studionet.id.toString(16)}`;
-
-function makeWriteClient(account: Address) {
-  if (!window.ethereum) throw new Error('A browser wallet was not detected.');
-  return createClient({ chain: studionet, account, provider: window.ethereum }) as any;
-}
-
+export function walletProvider(): any { return typeof window === 'undefined' ? null : window.ethereum; }
 export async function connectWallet(): Promise<Address> {
-  if (!window.ethereum) throw new Error('Install or enable a browser wallet first.');
-  const accounts = (await window.ethereum.request({ method: 'eth_requestAccounts' })) as string[];
+  const provider = walletProvider();
+  if (!provider) throw new Error('Enable a browser wallet first.');
+  const accounts = (await provider.request({ method: 'eth_requestAccounts' })) as string[];
   if (!accounts?.[0]) throw new Error('No wallet account was returned.');
   return accounts[0] as Address;
 }
-
-export async function ensureStudioNet(account: Address) {
-  if (!window.ethereum) throw new Error('A browser wallet was not detected.');
-  const client = makeWriteClient(account);
-  const current = String(await window.ethereum.request({ method: 'eth_chainId' }));
+async function ensureStudioNet(account: Address) {
+  if (CONFIG_OVERRIDE_MISMATCH) throw new Error('Stale VITE_CONTRACT_ADDRESS override; remove it and rebuild.');
+  const provider = walletProvider();
+  if (!provider) throw new Error('Enable a browser wallet first.');
+  const current = String(await provider.request({ method: 'eth_chainId' }));
   if (current.toLowerCase() !== STUDIONET_CHAIN_ID_HEX.toLowerCase()) {
     try {
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: STUDIONET_CHAIN_ID_HEX }] });
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: STUDIONET_CHAIN_ID_HEX }] });
     } catch (error: any) {
       if (error?.code !== 4902) throw error;
-      await window.ethereum.request({
-        method: 'wallet_addEthereumChain',
-        params: [{
-          chainId: STUDIONET_CHAIN_ID_HEX,
-          chainName: studionet.name,
-          rpcUrls: studionet.rpcUrls.default.http,
-          nativeCurrency: studionet.nativeCurrency,
-          blockExplorerUrls: [studionet.blockExplorers?.default?.url].filter(Boolean),
-        }],
-      });
-      await window.ethereum.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: STUDIONET_CHAIN_ID_HEX }] });
+      await provider.request({ method: 'wallet_addEthereumChain', params: [{
+        chainId: STUDIONET_CHAIN_ID_HEX, chainName: studionet.name,
+        rpcUrls: studionet.rpcUrls.default.http, nativeCurrency: studionet.nativeCurrency,
+        blockExplorerUrls: [studionet.blockExplorers?.default?.url].filter(Boolean),
+      }] });
+      await provider.request({ method: 'wallet_switchEthereumChain', params: [{ chainId: STUDIONET_CHAIN_ID_HEX }] });
     }
   }
-  return client;
+  const selected = String((await provider.request({ method: 'eth_accounts' }) as string[])?.[0] || '');
+  const chain = String(await provider.request({ method: 'eth_chainId' }));
+  if (selected.toLowerCase() !== account.toLowerCase()) throw new Error('Selected wallet changed; reconnect before sending.');
+  if (chain.toLowerCase() !== STUDIONET_CHAIN_ID_HEX.toLowerCase()) throw new Error('Wallet is not on StudioNet.');
+  return createClient({ chain: studionet, account, provider }) as any;
 }
-
 async function readFinal<T>(functionName: string, args: unknown[] = []): Promise<T> {
   return readClient.readContract({ address: CONTRACT_ADDRESS, functionName, args, stateStatus: 'finalized' }) as Promise<T>;
 }
-
 export const getConfig = () => readFinal<ProofConfig>('get_config');
-export const getObligation = (obligationId: number) => readFinal<Obligation>('get_obligation', [obligationId]);
-export const getPeriod = (obligationId: number, periodNumber: number) => readFinal<Period>('get_period', [obligationId, periodNumber]);
-export const getPeriods = (obligationId: number, fromPeriod: number, count: number) => readFinal<Period[]>('get_periods', [obligationId, fromPeriod, count]);
-
-export async function createObligationTx(account: Address, responsible: string, requirement: string, periodSeconds: number, remediationSeconds: number): Promise<TxHash> {
+export const getObligation = (id: number) => readFinal<Obligation>('get_obligation', [id]);
+export const getPeriod = (id: number, period: number) => readFinal<Period>('get_period', [id, period]);
+export const getPeriods = (id: number, from: number, count: number) => readFinal<Period[]>('get_periods', [id, from, count]);
+export const getReport = (id: number, period: number, remediation: boolean) => readFinal<Report>('get_report', [id, period, remediation]);
+export async function writeMethod(account: Address, functionName: string, args: unknown[]): Promise<TxHash> {
   const client = await ensureStudioNet(account);
-  return client.writeContract({
-    address: CONTRACT_ADDRESS,
-    functionName: 'create_obligation',
-    args: [responsible, requirement, periodSeconds, remediationSeconds],
-    value: 0n,
-  });
-}
-
-export async function submitEvidenceTx(account: Address, obligationId: number, evidence: string): Promise<TxHash> {
-  const client = await ensureStudioNet(account);
-  return client.writeContract({ address: CONTRACT_ADDRESS, functionName: 'submit_period_evidence', args: [obligationId, evidence], value: 0n });
-}
-
-export async function remediatePeriodTx(account: Address, obligationId: number, periodNumber: number, evidence: string): Promise<TxHash> {
-  const client = await ensureStudioNet(account);
-  return client.writeContract({ address: CONTRACT_ADDRESS, functionName: 'remediate_period', args: [obligationId, periodNumber, evidence], value: 0n });
-}
-
-export async function settlePeriodsTx(account: Address, obligationId: number): Promise<TxHash> {
-  const client = await ensureStudioNet(account);
-  return client.writeContract({ address: CONTRACT_ADDRESS, functionName: 'settle_periods', args: [obligationId], value: 0n });
+  return client.writeContract({ address: CONTRACT_ADDRESS, functionName, args, value: 0n });
 }
 
 function executionName(value: any) {

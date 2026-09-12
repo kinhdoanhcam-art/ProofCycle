@@ -1,54 +1,30 @@
-import { readFileSync, existsSync, readdirSync, statSync } from 'node:fs';
+import { readFileSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { resolve, relative } from 'node:path';
-
+import { resolve } from 'node:path';
 const root = resolve(new URL('..', import.meta.url).pathname);
-const contractPath = resolve(root, 'contracts', 'ProofCycle.py');
-const expectedSha = '5588c08cf5b5e82ad4a1b8776c8c55fa48f8b8ec1f8b923cd2c2c69028c2df69';
-const projectAddress = '0xcd661Ee97B358948c4B943C8d2B5f4195E54D75E';
-const runtimeAddress = '0x50B778A214AD3e83E5eA24Da939636AE2547A5Ab';
-
-if (!existsSync(contractPath)) throw new Error('contracts/ProofCycle.py is missing');
-if (existsSync(resolve(root, 'contracts', 'ObligationProof.py'))) throw new Error('Legacy public contract filename must not be present');
-
-const contract = readFileSync(contractPath);
-const actualSha = createHash('sha256').update(contract).digest('hex');
-if (actualSha !== expectedSha) throw new Error(`Contract SHA mismatch: ${actualSha}`);
-
-const source = contract.toString('utf8');
-for (const marker of [
-  'class ObligationProof(gl.Contract):',
-  '"name": "ObligationProof"',
-  '"version": "1.1"',
-  '"cache_scope": "OBLIGATION"',
-  '"semantic_scope": "TEXTUAL_EVIDENCE_SUPPORT"',
-  '"external_truth_verified": False',
-]) {
-  if (!source.includes(marker)) throw new Error(`Frozen contract marker missing: ${marker}`);
+const read = p => readFileSync(resolve(root,p),'utf8');
+const source = readFileSync(resolve(root,'contracts/ProofCycle.py'));
+const sha = createHash('sha256').update(source).digest('hex');
+const release = JSON.parse(read('release.json'));
+const address = '0x2B37e48581D888cc635Fd716456328F1411700D7';
+if (sha !== '6070ef9c487e5fafbb8141e1d6c2722fea94333a218f40a79f9665049b9c7b0b' || sha !== release.contract_sha256)
+  throw new Error('Production source SHA256 mismatch');
+if (read('SOURCE_SHA256.txt').trim() !== `${sha}  contracts/ProofCycle.py`) throw new Error('Source checksum file mismatch');
+if (release.deployment_address.toLowerCase() !== address.toLowerCase() || release.runtime_verified || release.semantic_live_verified || !release.frontend_integrated)
+  throw new Error('Release status or address mismatch');
+for (const [path,markers] of Object.entries({
+  'contracts/ProofCycle.py':['class ObligationProof(gl.Contract):','"version": "2.0"','"cache_scope": "OBLIGATION_PERIOD"','"evidence_mode": "AUTHENTICATED_ISSUER_REPORT"'],
+  'src/config.ts':[sha,address],
+  'src/genlayer.ts':['getReport','getPeriod','getConfig','writeMethod'],
+  'src/App.tsx':['attest_period_report','attest_remediation_report','submit_period_evidence','remediate_period','settle_periods','verifySettlement'],
+  'src/postconditions.ts':['verifyAttested','verifyEvaluated','verifySettlement','snapshotUnchanged'],
+})) {
+  if (!existsSync(resolve(root,path))) throw new Error(`Missing ${path}`);
+  for (const m of markers) if (!read(path).includes(m)) throw new Error(`${path} missing ${m}`);
 }
-
-const cfg = readFileSync(resolve(root, 'src', 'config.ts'), 'utf8');
-for (const marker of [expectedSha, projectAddress, runtimeAddress]) {
-  if (!cfg.includes(marker)) throw new Error(`config.ts missing expected value: ${marker}`);
+const publicFiles = ['src/App.tsx','src/config.ts','src/genlayer.ts','src/postconditions.ts','README.md','TESTING.md','index.html'];
+for (const file of publicFiles) {
+  if (/0xcd661ee97b358948c4b943c8d2b5f4195e54d75e|0x50b778a214ad3e83e5ea24da939636ae2547a5ab|5588c08cf5b5e82ad4a1b8776c8c55fa48f8b8ec1f8b923cd2c2c69028c2df69/i.test(read(file)))
+    throw new Error('Legacy v1 deployment/source in public file '+file);
 }
-
-const banned = /\b(Claude|ChatGPT|OpenAI|Anthropic)\b|internal review|review request|AI feedback|predeploy review/i;
-const skip = new Set(['node_modules', 'dist', '.git']);
-function scan(dir) {
-  for (const name of readdirSync(dir)) {
-    if (skip.has(name)) continue;
-    const p = resolve(dir, name); const s = statSync(p);
-    if (s.isDirectory()) scan(p);
-    else if (/\.(?:md|txt|ts|tsx|js|mjs|json|html|py|svg)$/i.test(name)) {
-      if (relative(root, p) === 'scripts/verify.mjs') continue;
-      const text = readFileSync(p, 'utf8');
-      if (banned.test(text)) throw new Error(`Public hygiene marker found in ${relative(root, p)}`);
-    }
-  }
-}
-scan(root);
-
-console.log('ProofCycle project verification PASS');
-console.log(`Contract SHA256: ${actualSha}`);
-console.log(`Project address: ${projectAddress}`);
-console.log(`Runtime evidence: ${runtimeAddress}`);
+console.log('Static production source, address, ABI and claim gates PASS: '+sha);

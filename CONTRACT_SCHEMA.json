@@ -1,0 +1,218 @@
+{
+  "ctor": {
+    "params": [],
+    "kwparams": {}
+  },
+  "methods": {
+    "attest_period_report": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "period_number",
+          "int"
+        ],
+        [
+          "record_reference",
+          "string"
+        ],
+        [
+          "evidence_text",
+          "string"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": false,
+      "ret": "null",
+      "payable": false
+    },
+    "attest_remediation_report": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "period_number",
+          "int"
+        ],
+        [
+          "record_reference",
+          "string"
+        ],
+        [
+          "evidence_text",
+          "string"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": false,
+      "ret": "null",
+      "payable": false
+    },
+    "create_obligation": {
+      "params": [
+        [
+          "responsible_party_address",
+          "string"
+        ],
+        [
+          "evidence_issuer_address",
+          "string"
+        ],
+        [
+          "source_name",
+          "string"
+        ],
+        [
+          "requirement_text",
+          "string"
+        ],
+        [
+          "period_seconds",
+          "int"
+        ],
+        [
+          "submission_seconds",
+          "int"
+        ],
+        [
+          "remediation_seconds",
+          "int"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": false,
+      "ret": "null",
+      "payable": false
+    },
+    "get_config": {
+      "params": [],
+      "kwparams": {},
+      "readonly": true,
+      "ret": "dict"
+    },
+    "get_obligation": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": true,
+      "ret": "dict"
+    },
+    "get_period": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "period_number",
+          "int"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": true,
+      "ret": "dict"
+    },
+    "get_periods": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "from_period",
+          "int"
+        ],
+        [
+          "count",
+          "int"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": true,
+      "ret": [
+        {
+          "$rep": "dict"
+        }
+      ]
+    },
+    "get_report": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "period_number",
+          "int"
+        ],
+        [
+          "remediation",
+          "bool"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": true,
+      "ret": "dict"
+    },
+    "remediate_period": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "period_number",
+          "int"
+        ],
+        [
+          "expected_report_digest",
+          "string"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": false,
+      "ret": "null",
+      "payable": false
+    },
+    "settle_periods": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": false,
+      "ret": "null",
+      "payable": false
+    },
+    "submit_period_evidence": {
+      "params": [
+        [
+          "obligation_id",
+          "int"
+        ],
+        [
+          "period_number",
+          "int"
+        ],
+        [
+          "expected_report_digest",
+          "string"
+        ]
+      ],
+      "kwparams": {},
+      "readonly": false,
+      "ret": "null",
+      "payable": false
+    }
+  }
+}
