@@ -1,7 +1,12 @@
 node_modules/
 dist/
+.venv/
+__pycache__/
+.pytest_cache/
 .env
 .env.*
+artifacts/
+*.pyc
 *.log
 *.tsbuildinfo
 .DS_Store

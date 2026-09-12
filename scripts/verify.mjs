@@ -10,7 +10,7 @@ const address = '0x2B37e48581D888cc635Fd716456328F1411700D7';
 if (sha !== '6070ef9c487e5fafbb8141e1d6c2722fea94333a218f40a79f9665049b9c7b0b' || sha !== release.contract_sha256)
   throw new Error('Production source SHA256 mismatch');
 if (read('SOURCE_SHA256.txt').trim() !== `${sha}  contracts/ProofCycle.py`) throw new Error('Source checksum file mismatch');
-if (release.stage !== 'RUNTIME_VERIFIED_FRONTEND_UPDATE_PENDING' || release.deployment_address.toLowerCase() !== address.toLowerCase() || !release.runtime_verified || !release.semantic_live_verified || !release.frontend_integrated)
+if (release.stage !== 'RUNTIME_VERIFIED_FRONTEND_INTEGRATED' || release.deployment_address.toLowerCase() !== address.toLowerCase() || !release.runtime_verified || !release.semantic_live_verified || !release.frontend_integrated)
   throw new Error('Release status or address mismatch');
 for (const hash of [
   '0x381c9bdbde0cd7a59a49ea649f004e3d147fb1b430c58fce3ccf91c927eee36e',

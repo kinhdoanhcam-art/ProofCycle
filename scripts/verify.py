@@ -30,7 +30,7 @@ def main():
         raise SystemExit("FAIL: SOURCE_SHA256 does not match production source")
     compile(ast.parse(source.decode("utf-8")), str(CONTRACT), "exec")
 
-    if (manifest["stage"] != "RUNTIME_VERIFIED_FRONTEND_UPDATE_PENDING" or
+    if (manifest["stage"] != "RUNTIME_VERIFIED_FRONTEND_INTEGRATED" or
             manifest["deployment_address"].lower() != "0x2b37e48581d888cc635fd716456328f1411700d7" or
             not manifest["runtime_verified"] or not manifest["semantic_live_verified"] or
             not manifest["frontend_integrated"]):

@@ -5,7 +5,7 @@ ProofCycle is a Vite/React interface for the deployed GenLayer `ObligationProof`
 - Contract: [0x2B37e48581D888cc635Fd716456328F1411700D7](https://explorer-studio.genlayer.com/address/0x2B37e48581D888cc635Fd716456328F1411700D7)
 - Deploy transaction: `0x150cd57a8813681eab65966d04e58a240bc47ef57d9bc5fc982181a70e20f270` — FINALIZED/SUCCESS
 - Exact deployed source: `contracts/ProofCycle.py`, SHA256 `6070ef9c487e5fafbb8141e1d6c2722fea94333a218f40a79f9665049b9c7b0b`
-- `get_config` version 2.0 and issuer-report profile observed on-chain; period-specific semantic verdicts, fresh and cached evaluations, remediation, ordered settlement, missed periods and a GenVM rollback were verified on obligation #1. See [RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md). This release still needs to be pushed to GitHub and deployed on Vercel.
+- `get_config` version 2.0 and issuer-report profile observed on-chain; period-specific semantic verdicts, fresh and cached evaluations, remediation, ordered settlement, missed periods and a GenVM rollback were verified on obligation #1. See [RUNTIME_EVIDENCE.md](RUNTIME_EVIDENCE.md). Before submission, confirm that the GitHub commit and Vercel deployment contain this exact release.
 
 ## Run locally
 
