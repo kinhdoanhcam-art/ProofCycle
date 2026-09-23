@@ -1,160 +1,1097 @@
-import { useEffect, useState } from 'react';
-import type { ReactNode } from 'react';
-import { CONFIG_OVERRIDE_MISMATCH, CONTRACT_ADDRESS, CONTRACT_EXPLORER_URL, DEPLOY_TX, SOURCE_SHA256 } from './config';
-import { cleanError, connectWallet, executionErrorDetail, executionOutcome, getConfig, getObligation,
-  getPeriod, getPeriods, getReport, txExplorerUrl, waitFinalized, walletProvider, writeMethod } from './genlayer';
-import { profileMatches, requireState, snapshotUnchanged, stableRefusalSnapshot, verifyAttested, verifyCreated, verifyEvaluated, verifySettlement } from './postconditions';
-import type { Address, Obligation, Period, ProofConfig, Report, TxHash } from './types';
+import {
+  ArrowRight,
+  BookOpenText,
+  Check,
+  Clipboard,
+  ExternalLink,
+  FileKey2,
+  LockKeyhole,
+  LogOut,
+  RefreshCw,
+  Route,
+  ShieldCheck,
+  Sparkles,
+  Unplug,
+  Wallet,
+  Waypoints,
+  X,
+} from "lucide-react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import {
+  EXPLORER_URL,
+  EXPLORER_BASE,
+  MAX_LABEL_LENGTH,
+  MAX_NAME_LENGTH,
+  MAX_RULE_TEXT_LENGTH,
+} from "./config";
+import { errorMessage } from "./errors";
+import {
+  computeGateId,
+  computeRuleId,
+  normalizeGateId,
+  pyCollapse,
+  pyLen,
+  pyStrip,
+} from "./ids";
+import {
+  connectStudioNet,
+  getAttempts,
+  getGate,
+  leaderRollbackReason,
+  writeMethod,
+} from "./genlayer";
+import type { AttemptRecord, GateRecord, GateState, TxUiState } from "./types";
 
-type Page = 'cycle' | 'new' | 'obligation' | 'evidence' | 'repair' | 'settle' | 'proof';
-const tabs: { key: Page; name: string }[] = [
-  {key:'cycle',name:'Overview'},{key:'new',name:'Create'},{key:'obligation',name:'Obligation'},
-  {key:'evidence',name:'Issuer report'},{key:'repair',name:'Remediation'},
-  {key:'settle',name:'Ledger'},{key:'proof',name:'Proof'},
-];
-const short = (v?: string | null) => v ? `${v.slice(0, 8)}…${v.slice(-6)}` : '—';
-const same = (a?: string | null, b?: string) => Boolean(a && b && a.toLowerCase() === b.toLowerCase());
-const time = (v?: number) => v ? new Date(v * 1000).toLocaleString() : '—';
-const positive = (v: string) => { const n = Number(v); return Number.isSafeInteger(n) && n > 0 ? n : 0; };
-function text(v: string, max: number) { const s = v.trim(); if (!s || s.length > max) throw new Error(`Enter 1–${max} characters.`); return s; }
-function address(v: string) { if (!/^0x[0-9a-fA-F]{40}$/.test(v) || /^0x0{40}$/i.test(v)) throw new Error('Enter a nonzero 0x address (40 hex characters).'); return v; }
-function Field({label,value,set,multi=false}: {label:string;value:string;set:(v:string)=>void;multi?:boolean}) {
-  return <label className="work-field">{label}{multi?<textarea value={value} onChange={e=>set(e.target.value)}/>:<input value={value} onChange={e=>set(e.target.value)}/>}</label>;
+type Tab = "gate" | "log";
+
+type PendingExpectation =
+  | { kind: "create"; gateId: string; hash: string }
+  | { kind: "rule"; gateId: string; minAttempts: number; hash: string }
+  | { kind: "condition"; gateId: string; hash: string }
+  | { kind: "action"; gateId: string; hash: string };
+
+const DEMO = {
+  name: "Cargo departure gate",
+  action: "cargo leaving the depot",
+  condition: "a countersigned manifest",
+  necessary:
+    "Cargo may leave the depot only after the manifest carries a countersignature.",
+  alternative:
+    "Cargo may leave the depot with a countersigned manifest, or with written clearance from the night supervisor instead.",
+};
+
+const STATE_ORDER: GateState[] = ["LOCKED", "ARMED", "READY", "DONE"];
+
+function short(value: string, head = 6, tail = 5) {
+  if (!value) return "—";
+  return value.length <= head + tail + 2
+    ? value
+    : `${value.slice(0, head)}…${value.slice(-tail)}`;
 }
-function Card({title,children}: {title:string;children:ReactNode}) { return <section className="proof-card work-card"><div className="kicker">{title}</div>{children}</section>; }
-function Row({name,value}: {name:string;value:ReactNode}) { return <div className="work-detail"><span>{name}</span><strong>{value}</strong></div>; }
-export default function App() {
-  const [page,setPage]=useState<Page>('cycle'); const [cfg,setCfg]=useState<ProofConfig|null>(null);
-  const [account,setAccount]=useState<Address|null>(null); const [ob,setOb]=useState<Obligation|null>(null);
-  const [period,setPeriod]=useState<Period|null>(null); const [initial,setInitial]=useState<Report|null>(null);
-  const [repair,setRepair]=useState<Report|null>(null); const [rows,setRows]=useState<Period[]>([]);
-  const [idText,setIdText]=useState(''); const [periodText,setPeriodText]=useState('1');
-  const [responsible,setResponsible]=useState(''); const [issuer,setIssuer]=useState('');
-  const [source,setSource]=useState(''); const [requirement,setRequirement]=useState('');
-  const [periodSeconds,setPeriodSeconds]=useState('1200'); const [submissionSeconds,setSubmissionSeconds]=useState('1100');
-  const [remediationSeconds,setRemediationSeconds]=useState('1100'); const [reference,setReference]=useState('');
-  const [evidence,setEvidence]=useState(''); const [repairReference,setRepairReference]=useState('');
-  const [repairEvidence,setRepairEvidence]=useState(''); const [busy,setBusy]=useState(false);
-  const [notice,setNotice]=useState(''); const [error,setError]=useState(''); const [tx,setTx]=useState<TxHash|null>(null);
-  const matched=Boolean(cfg && profileMatches(cfg) && !CONFIG_OVERRIDE_MISMATCH);
-  const ready=Boolean(matched && account && !busy); const selected=Boolean(ob && period && positive(periodText)===period.period_number);
-  const isIssuer=same(account,ob?.evidence_issuer), isResponsible=same(account,ob?.responsible_party);
-  useEffect(()=>{
-    getConfig().then(setCfg).catch(e=>setError(cleanError(e)));
-    const onHash=()=>{const h=location.hash.replace('#/','');if(tabs.some(t=>t.key===h))setPage(h as Page);};
-    onHash();window.addEventListener('hashchange',onHash);
-    const provider=walletProvider();
-    const onAccounts=(a:string[])=>{setAccount((a?.[0]||null) as Address|null);setNotice('Wallet account changed; inspect role before signing.');};
-    const onChain=()=>{setNotice('Chain changed; StudioNet is required for writes.');getConfig().then(setCfg).catch(e=>setError(cleanError(e)));};
-    provider?.on?.('accountsChanged',onAccounts);provider?.on?.('chainChanged',onChain);
-    provider?.request({method:'eth_accounts'}).then((a:string[])=>{if(a?.[0])setAccount(a[0] as Address);}).catch(()=>undefined);
-    return()=>{window.removeEventListener('hashchange',onHash);provider?.removeListener?.('accountsChanged',onAccounts);provider?.removeListener?.('chainChanged',onChain);};
-  },[]);
-  function go(next:Page){location.hash=`#/${next}`;setPage(next);window.scrollTo({top:0,behavior:'smooth'});}
-  async function attempt(fn:()=>Promise<unknown>){try{setError('');await fn();}catch(e){setError(cleanError(e));}}
-  async function load(id:number,n?:number){
-    const item=await getObligation(id); const num=n||Math.max(1,item.latest_completed_period);
-    const [p,a,b]=await Promise.all([getPeriod(id,num),getReport(id,num,false),getReport(id,num,true)]);
-    setOb(item);setPeriod(p);setInitial(a);setRepair(b);setIdText(String(id));setPeriodText(String(num));
-    return {item,p,a,b};
-  }
-  async function open(){const id=positive(idText);if(!id)throw new Error('Enter an existing obligation ID.');await load(id);setRows([]);go('obligation');}
-  async function select(){if(!ob)throw new Error('Open an obligation first.');const n=positive(periodText);if(!n)throw new Error('Invalid period number.');await load(ob.obligation_id,n);}
-  async function write(label:string,method:string,args:unknown[],verify:()=>Promise<void>,id?:number){
-    if(!account)throw new Error('Connect a wallet.');if(busy)throw new Error('Wait for the current transaction.');
-    const fresh=await getConfig();setCfg(fresh);
-    if(!profileMatches(fresh)||CONFIG_OVERRIDE_MISMATCH)throw new Error('Contract profile or Vercel address override mismatches. Writes blocked.');
-    setBusy(true);setError('');setTx(null);setNotice(`${label}: confirm in wallet…`);
-    try{
-      const hash=await writeMethod(account,method,args);setTx(hash);setNotice(`${label}: waiting for finalization ${short(hash)}…`);
-      const receipt=await waitFinalized(hash), outcome=executionOutcome(receipt);
-      if(outcome.ok===false)throw new Error(executionErrorDetail(receipt));
-      await verify();setNotice(`${label}: ${outcome.ok===true?'execution and ':''}finalized postcondition verified${outcome.ok===null?' (execution enum unavailable)':''}.`);
-      setCfg(await getConfig());if(id){await load(id,positive(periodText)||undefined);setRows([]);}
-    }catch(e){setError(cleanError(e));}finally{setBusy(false);}
-  }
-  async function create(){
-    if(!account)throw new Error('Connect creator wallet.');
-    const r=address(responsible),i=address(issuer),s=text(source,160),req=text(requirement,2000);
-    if(same(account,r)||same(account,i)||same(r,i))throw new Error('Creator, responsible party and issuer must be different wallets.');
-    const p=positive(periodSeconds),sub=positive(submissionSeconds),rem=positive(remediationSeconds);
-    if(!p||p>31536000||!sub||!rem||sub>=p||rem>=p)throw new Error('Use positive windows shorter than the period (maximum 31,536,000 seconds).');
-    const before=await getConfig();
-    await write('Create obligation','create_obligation',[r,i,s,req,p,sub,rem],async()=>{
-      const after=await getConfig(),item=await getObligation(after.obligation_count);
-      verifyCreated(before,after,item,account,r,i,s,req,p,sub,rem);
-      await load(item.obligation_id,1);setRows([]);go('obligation');
-    });
-  }
-  async function attest(remediation:boolean){
-    if(!account||!ob||!period||!selected||!isIssuer)throw new Error('Open the period with designated issuer wallet.');
-    if(!(remediation?period.remediation_open:period.submission_open))throw new Error('Issuer reporting window is closed.');
-    const ref=text(remediation?repairReference:reference,256),body=text(remediation?repairEvidence:evidence,4000);
-    const before=remediation?repair:initial;if(!before||before.exists)throw new Error('An immutable report already exists or has not loaded.');
-    const id=ob.obligation_id,n=period.period_number,beforeOb=await getObligation(id);
-    await write(remediation?'Attest remediation':'Attest period',remediation?'attest_remediation_report':'attest_period_report',
-      [id,n,ref,body],async()=>{
-        const [after,p,item]=await Promise.all([getReport(id,n,remediation),getPeriod(id,n),getObligation(id)]);
-        verifyAttested(before,after,period,p,beforeOb,item,account,ref,body,remediation);
-      },id);
-  }
-  async function evaluate(remediation:boolean){
-    if(!account||!ob||!period||!selected||!isResponsible)throw new Error('Open the period with responsible party wallet.');
-    if(!(remediation?period.remediation_open:period.submission_open))throw new Error('Evaluation window is closed.');
-    const report=remediation?repair:initial;
-    if(!report?.exists||!report.report_digest)throw new Error('Designated issuer must attest this period and phase first.');
-    const id=ob.obligation_id,n=period.period_number,beforeOb=await getObligation(id);
-    await write(remediation?'Evaluate remediation':'Evaluate issuer report',remediation?'remediate_period':'submit_period_evidence',
-      [id,n,report.report_digest],async()=>{
-        const [p,item,stored]=await Promise.all([getPeriod(id,n),getObligation(id),getReport(id,n,remediation)]);
-        requireState(stored.report_digest===report.report_digest&&stored.evidence_text===report.evidence_text,'issuer report remains immutable');
-        verifyEvaluated(period,p,beforeOb,item,report.report_digest,remediation);
-      },id);
-  }
-  async function settle(){
-    if(!ob)throw new Error('Open an obligation.');const before=await getObligation(ob.obligation_id);
-    if(!before.settlement_available)throw new Error('No ordered settlement available.');const id=ob.obligation_id;
-    await write('Settle periods','settle_periods',[id],async()=>{
-      const after=await getObligation(id),count=after.settled_through-before.settled_through;
-      requireState(count>0&&count<=20,'settlement advances 1–20 periods');
-      verifySettlement(before,after,await getPeriods(id,before.settled_through+1,count));
-    },id);
-  }
-  async function refusal(){
-    if(!account||!ob||!period||!selected||!isResponsible||!period.submission_open||initial?.exists)
-      throw new Error('Select an unreported period during the submission window with the responsible wallet.');
-    const id=ob.obligation_id,n=period.period_number;
-    const before=await Promise.all([getConfig(),getObligation(id),getPeriod(id,n),getReport(id,n,false)]);
-    setBusy(true);setTx(null);setError('');setNotice('Expected refusal: confirm the controlled test transaction…');
-    try{
-      const hash=await writeMethod(account,'submit_period_evidence',[id,n,'']);setTx(hash);
-      const outcome=executionOutcome(await waitFinalized(hash));
-      const after=await Promise.all([getConfig(),getObligation(id),getPeriod(id,n),getReport(id,n,false)]);
-      snapshotUnchanged(stableRefusalSnapshot(...before),stableRefusalSnapshot(...after));
-      if(outcome.ok!==false)throw new Error('State unchanged, but explicit contract rejection not proven; inspect transaction.');
-      setNotice('Contract refusal confirmed; finalized obligation, period and report unchanged.');
-    }catch(e){setError(cleanError(e));}finally{setBusy(false);}
-  }
-  async function more(){if(!ob)throw new Error('Open an obligation.');const from=rows.length+1;
-    if(from>ob.current_period)return;
-    const next=await getPeriods(ob.obligation_id,from,Math.min(50,ob.current_period-from+1));
-    requireState(next.length>0&&next[0].period_number===from,'history page starts at requested period');
-    setRows(prev=>[...prev,...next]);
-  }
-  return <div className="app-shell"><header className="topbar"><div className="brand"><img src="/logo.svg" alt="ProofCycle"/><div><strong>ProofCycle</strong><span>issuer → period → ledger</span></div></div>
-    <nav>{tabs.map((t,i)=><button key={t.key} className={page===t.key?'active':''} onClick={()=>go(t.key)}><b>{String(i).padStart(2,'0')}</b>{t.name}</button>)}</nav>
-    <div className="head-actions"><a className="contract-chip" href={CONTRACT_EXPLORER_URL} target="_blank" rel="noreferrer"><i/>{short(CONTRACT_ADDRESS)}</a><button className="wallet" onClick={()=>attempt(async()=>{const a=await connectWallet();setAccount(a);setNotice(`Connected ${short(a)}`);})}>{account?short(account):'Connect wallet'}</button></div></header>
-    <div className="signal-line"><b>{matched?'PROFILE MATCH':'WRITES LOCKED'}</b><span>{CONFIG_OVERRIDE_MISMATCH?'Remove stale VITE_CONTRACT_ADDRESS from Vercel and rebuild.':cfg?`${cfg.name} v${cfg.version} · ${cfg.evidence_mode}`:'Loading finalized StudioNet profile…'}</span></div>
-    {error&&<div className="error-bar"><b>CHECK</b>{error}<button aria-label="Dismiss" onClick={()=>setError('')}>×</button></div>}
-    {notice&&<div className="tx-bar"><span>STATUS</span>{notice}{tx&&<a href={txExplorerUrl(tx)} target="_blank" rel="noreferrer">View transaction ↗</a>}</div>}
-    <main>{page==='cycle'&&<div className="page hero-page"><div className="hero-copy"><div className="kicker">GENLAYER / PERIOD-SPECIFIC EVIDENCE</div><h1>Evidence with <em>an issuer.</em></h1><p>Every obligation names a distinct evidence issuer. That wallet signs an immutable report after the observation period. The responsible party submits the stored digest; semantic verdicts and deterministic settlement are separate steps.</p><div className="hero-actions"><button className="primary" onClick={()=>go('new')}>Create obligation →</button><button onClick={()=>go('obligation')}>Inspect on-chain state</button></div></div><div className="cycle-visual"><div className="orbit orbit-a"/><div className="orbit orbit-b"/><div className="cycle-core"><span>PROOF CYCLE</span><strong>v2.0</strong></div><div className="node n1"><b>01 / ISSUER</b><span>ATTEST</span></div><div className="node n2"><b>02 / PARTY</b><span>EVALUATE</span></div><div className="node n3"><b>03 / LEDGER</b><span>SETTLE</span></div></div><div className="metric-strip"><div><span>SOURCE</span><strong>Issuer signed</strong><small>Designated distinct wallet</small></div><div><span>BOUNDARY</span><strong>Per period</strong><small>Completed observation window</small></div><div><span>EVALUATION</span><strong>Exact digest</strong><small>Immutable issuer report</small></div><div><span>LIVE STATUS</span><strong>Verified</strong><small>StudioNet behavior for obligation #1</small></div></div></div>}
-    {page==='new'&&<div className="page"><div className="page-head"><div><div className="kicker">01 / CREATE</div><h1>Define an obligation</h1><p>Creator, responsible party and evidence issuer must be three distinct wallets.</p></div></div><Card title="IMMUTABLE INPUTS"><div className="work-fields"><Field label="Responsible party address" value={responsible} set={setResponsible}/><Field label="Evidence issuer address" value={issuer} set={setIssuer}/><Field label="Issuer source name" value={source} set={setSource}/><Field label="Mandatory requirement" value={requirement} set={setRequirement} multi/></div><div className="work-fields timings"><Field label="Period seconds" value={periodSeconds} set={setPeriodSeconds}/><Field label="Submission window seconds" value={submissionSeconds} set={setSubmissionSeconds}/><Field label="Remediation window seconds" value={remediationSeconds} set={setRemediationSeconds}/></div><button className="primary" disabled={!ready} onClick={()=>attempt(create)}>Create on StudioNet</button><p>The source name does not establish the issuer’s real-world identity or independence.</p></Card></div>}
-    {page!=='cycle'&&page!=='new'&&<div className="page"><div className="page-head"><div><div className="kicker">{tabs.find(t=>t.key===page)?.name.toUpperCase()} / FINALIZED STATE</div><h1>{page==='proof'?'Evidence & limitations':page==='obligation'?'Inspect obligation':page==='evidence'?'Issuer report':page==='repair'?'Repair a deficient period':'Ordered settlement'}</h1><p>Every success message requires finalized contract state after the transaction.</p></div>{page!=='proof'&&<div className="open-box"><input placeholder="Obligation ID" value={idText} onChange={e=>setIdText(e.target.value)}/><button disabled={busy} onClick={()=>attempt(open)}>Open</button></div>}</div>
-    {page==='proof'?<div className="proof-grid"><Card title="SOURCE & DEPLOYMENT"><Row name="Contract" value={<a href={CONTRACT_EXPLORER_URL} target="_blank" rel="noreferrer">{CONTRACT_ADDRESS}</a>}/><Row name="SHA256" value={<code>{SOURCE_SHA256}</code>}/><Row name="Deploy tx" value={<a href={txExplorerUrl(DEPLOY_TX)} target="_blank" rel="noreferrer">{short(DEPLOY_TX)} ↗</a>}/><p>Deployment FINALIZED/SUCCESS and on-chain configuration match v2.0.</p></Card><Card title="OBSERVED RUNTIME / OBLIGATION #1"><Row name="Missing report rollback" value={<a href={txExplorerUrl('0x381c9bdbde0cd7a59a49ea649f004e3d147fb1b430c58fce3ccf91c927eee36e')} target="_blank" rel="noreferrer">GenVM ERROR / rollback ↗</a>}/><Row name="Satisfied remediation" value={<a href={txExplorerUrl('0xfb0602e99944a49d6c267bd5afa71c887fa46cb49ce9d14462e54641c93d754c')} target="_blank" rel="noreferrer">Period #3 / SUCCESS ↗</a>}/><Row name="Exact-text cache hit" value={<a href={txExplorerUrl('0x01fc550870701c40fd5295d9218ecfb7eb3ec81a9b8320a3f1f9d46192937dcd')} target="_blank" rel="noreferrer">Period #6 / HIT ↗</a>}/><Row name="Ordered final ledger" value={<a href={txExplorerUrl('0x422a7c4f6a8ccd590ef0601391dfb44d5c57ea7c2513fa9a51f36657f50327f3')} target="_blank" rel="noreferrer">2 satisfied / 1 deficient / 3 missed ↗</a>}/><p>Finalized contract state verifies the verdicts, cache flag, counter and ledger postconditions. The negative transaction's EVM receipt alone does not prove its GenVM outcome.</p></Card><Card title="TRUST BOUNDARY"><p>A signed issuer transaction authenticates control of its designated wallet and binds report contents to the obligation, period, source and phase. This does not prove real-world identity, issuer independence or truth of observations; review the issuer and referenced external records.</p><span className="pill warn">EXTERNAL FACTS NOT VERIFIED</span></Card></div>:!ob?<div className="empty"><h3>Open an obligation</h3><p>Enter an ID above to inspect finalized period state and issuer reports.</p></div>:<>
-      <div className="obligation-board"><div className="ob-top"><div><span className="pill good">{ob.status}</span><span>OBLIGATION #{ob.obligation_id}</span></div><button disabled={busy} onClick={()=>attempt(()=>load(ob.obligation_id,positive(periodText)))}>Refresh</button></div><div className="ob-main"><div className="requirement-panel"><div className="kicker">{ob.source_name}</div><h2>Fixed requirement</h2><p>{ob.requirement_text}</p><div className="party-lines"><Row name="CREATOR" value={<code>{ob.creator}</code>}/><Row name="PARTY" value={<code>{ob.responsible_party}</code>}/><Row name="ISSUER" value={<code>{ob.evidence_issuer}</code>}/></div></div><div className="period-panel"><span>PERIOD IN VIEW</span><strong>{period?.period_number||'—'}</strong><small>Current: {ob.current_period} · Completed: {ob.latest_completed_period}</small><div className="period-state"><b>{period?.final_outcome||period?.initial_verdict||'AWAITING REPORT'}</b><span>{time(period?.period_start)} → {time(period?.period_end)}</span></div><div className="work-fields"><Field label="Period number" value={periodText} set={setPeriodText}/><button disabled={busy} onClick={()=>attempt(select)}>Load period</button></div></div></div></div>
-      {page==='obligation'&&<div className="work-columns"><Card title="PERIOD WINDOWS"><Row name="Observation end" value={time(period?.period_end)}/><Row name="Submission deadline" value={time(period?.submission_deadline)}/><Row name="Remediation deadline" value={time(period?.remediation_deadline)}/><Row name="Initial verdict" value={period?.initial_verdict||'—'}/><Row name="Final outcome" value={period?.final_outcome||'—'}/></Card><Card title="ISSUER REPORT"><Row name="Attested" value={initial?.exists?time(initial.attested_at):'No report'}/><Row name="Reference" value={initial?.record_reference||'—'}/><Row name="Digest" value={<code>{initial?.report_digest||'—'}</code>}/><p className="observations">{initial?.evidence_text||'No issuer observations for this period.'}</p></Card></div>}
-      {page==='evidence'&&<div className="work-columns"><Card title="1 / DESIGNATED ISSUER"><p>After the observation ends, cite a period-specific external record and attest your observations before the submission deadline.</p><Row name="Your role" value={isIssuer?'DESIGNATED ISSUER':'SWITCH TO ISSUER WALLET'}/><Row name="Observation end" value={time(period?.period_end)}/><Row name="Submission deadline" value={time(period?.submission_deadline)}/><Field label="Record reference / transaction hash / URL" value={reference} set={setReference}/><Field label="Issuer observations" value={evidence} set={setEvidence} multi/><button className="primary" disabled={!ready||!isIssuer||!selected||!period?.submission_open||!!initial?.exists} onClick={()=>attempt(()=>attest(false))}>Attest immutable report</button></Card><Card title="2 / RESPONSIBLE PARTY"><p>The responsible party can only evaluate the issuer’s exact stored report digest.</p><Row name="Your role" value={isResponsible?'RESPONSIBLE PARTY':'SWITCH TO PARTY WALLET'}/><Row name="Reference" value={initial?.record_reference||'Awaiting issuer'}/><Row name="Digest" value={<code>{initial?.report_digest||'—'}</code>}/><p className="observations">{initial?.evidence_text||'No issuer observations yet.'}</p><button className="primary" disabled={!ready||!isResponsible||!selected||!period?.submission_open||!initial?.exists} onClick={()=>attempt(()=>evaluate(false))}>Evaluate exact digest</button><Row name="Verdict" value={period?.initial_verdict||'Not evaluated'}/>{isResponsible&&period?.submission_open&&!initial?.exists&&<button disabled={!ready} onClick={()=>attempt(refusal)}>Test refusal without issuer report</button>}</Card></div>}
-      {page==='repair'&&<div className="work-columns"><Card title="1 / ISSUER REMEDIATION"><p>After a deficient initial verdict, the same issuer may attest one immutable remediation report before the deadline.</p><Row name="Initial verdict" value={period?.initial_verdict||'—'}/><Row name="Deadline" value={time(period?.remediation_deadline)}/><Field label="New record reference" value={repairReference} set={setRepairReference}/><Field label="New issuer observations" value={repairEvidence} set={setRepairEvidence} multi/><button className="primary" disabled={!ready||!selected||!isIssuer||!period?.remediation_open||!!repair?.exists} onClick={()=>attempt(()=>attest(true))}>Attest remediation</button></Card><Card title="2 / RESPONSIBLE PARTY"><Row name="Initial deficiency retained" value={period?.initial_deficient_history?'YES':'NO'}/><Row name="Issuer reference" value={repair?.record_reference||'Awaiting issuer'}/><Row name="Digest" value={<code>{repair?.report_digest||'—'}</code>}/><p className="observations">{repair?.evidence_text||'No remediation report.'}</p><button className="primary" disabled={!ready||!selected||!isResponsible||!period?.remediation_open||!repair?.exists} onClick={()=>attempt(()=>evaluate(true))}>Evaluate remediation digest</button><Row name="Final outcome" value={period?.final_outcome||'Awaiting close'}/></Card></div>}
-      {page==='settle'&&<><div className="settle-board"><div className="status-dial"><span>DERIVED STATUS</span><strong>{ob.status}</strong><small>Settled through period #{ob.settled_through}</small></div><div className="counter-bank"><div><span>SATISFIED</span><strong>{ob.satisfied_count}</strong></div><div><span>DEFICIENT</span><strong>{ob.deficient_count}</strong></div><div><span>MISSED</span><strong>{ob.missed_count}</strong></div><div><span>STREAK</span><strong>{ob.streak}</strong></div><div><span>SEMANTIC EVALS</span><strong>{ob.semantic_eval_count}</strong></div><div><span>READY</span><strong>{ob.settlement_available?'YES':'NO'}</strong></div></div><div className="settle-action"><div className="kicker">ORDERED BATCH</div><p>Anyone may settle the next ready periods in order, up to 20 per call.</p><button className="primary" disabled={!ready||!ob.settlement_available} onClick={()=>attempt(settle)}>Settle ready periods</button></div></div><div className="history-head"><div><div className="kicker">PERIOD LEDGER</div><h2>{rows.length} / {ob.current_period} periods loaded</h2></div><button disabled={busy||rows.length>=ob.current_period} onClick={()=>attempt(more)}>Load next 50</button></div><div className="period-table"><div className="period-row header"><span>#</span><span>OBSERVATION END</span><span>INITIAL</span><span>FINAL</span><span>CACHE</span><span>SETTLED</span></div>{rows.map(p=><div className="period-row" key={p.period_number}><span>{p.period_number}</span><span>{time(p.period_end)}</span><span>{p.initial_verdict||'—'}</span><span>{p.final_outcome||'—'}</span><span>{p.initial_used_cache||p.remediation_used_cache?'YES':'NO'}</span><span>{p.settled?'YES':'NO'}</span></div>)}</div></>}
-    </>}</div>}</main><footer><div className="brand compact"><img src="/logo.svg" alt=""/><div/></div><span>PROOFCYCLE / STUDIO NET</span><span>Issuer identity and external facts need independent review.</span><a href={CONTRACT_EXPLORER_URL} target="_blank" rel="noreferrer">Explore contract ↗</a></footer></div>;
+
+function isSameAddress(a?: string, b?: string) {
+  return Boolean(a && b && a.toLowerCase() === b.toLowerCase());
 }
+
+function App() {
+  const [tab, setTab] = useState<Tab>("gate");
+  const [account, setAccount] = useState("");
+  const [connecting, setConnecting] = useState(false);
+
+  const [name, setName] = useState(DEMO.name);
+  const [actionLabel, setActionLabel] = useState(DEMO.action);
+  const [conditionLabel, setConditionLabel] = useState(DEMO.condition);
+  const [actor, setActor] = useState("");
+  const [ruleText, setRuleText] = useState(DEMO.necessary);
+
+  const [gateIdInput, setGateIdInput] = useState("");
+  const [gate, setGate] = useState<GateRecord | null>(null);
+  const [attempts, setAttempts] = useState<AttemptRecord[]>([]);
+  const [loadingGate, setLoadingGate] = useState(false);
+  const [loadingLog, setLoadingLog] = useState(false);
+
+  const [busy, setBusy] = useState("");
+  // Synchronous guard. React state is async, so `busy` alone does not stop two
+  // clicks landing in the same tick.
+  const inFlight = useRef(false);
+  const pendingExpectation = useRef<PendingExpectation | null>(null);
+  const autoRefreshTimer = useRef<number | null>(null);
+  const [tx, setTx] = useState<TxUiState>({
+    kind: "idle",
+    message: "No transaction submitted.",
+  });
+
+  const isCreator = isSameAddress(account, gate?.creator);
+  const isActor = isSameAddress(account, gate?.actor);
+
+  const clearAutoRefreshTimer = useCallback(() => {
+    if (autoRefreshTimer.current !== null) {
+      window.clearTimeout(autoRefreshTimer.current);
+      autoRefreshTimer.current = null;
+    }
+  }, []);
+
+  const pendingSatisfied = useCallback(
+    (next: GateRecord, pending: PendingExpectation) => {
+      if (normalizeGateId(next.gate_id) !== normalizeGateId(pending.gateId)) {
+        return false;
+      }
+
+      if (pending.kind === "create") return true;
+      if (pending.kind === "rule") {
+        return next.attempt_count >= pending.minAttempts;
+      }
+      if (pending.kind === "condition") return next.condition_met;
+      if (pending.kind === "action") return next.action_done;
+
+      return false;
+    },
+    []
+  );
+
+  const connectWallet = useCallback(async () => {
+    if (!window.ethereum) {
+      setTx({ kind: "error", message: "MetaMask was not found." });
+      return;
+    }
+
+    setConnecting(true);
+
+    try {
+      const accounts = (await window.ethereum.request({
+        method: "eth_requestAccounts",
+      })) as string[];
+
+      const next = accounts?.[0] ?? "";
+      if (!next) throw new Error("No wallet account was returned.");
+
+      await connectStudioNet(next);
+      setAccount(next);
+      setTx({ kind: "idle", message: "Wallet connected to StudioNet." });
+    } catch (error) {
+      setTx({ kind: "error", message: errorMessage(error) });
+    } finally {
+      setConnecting(false);
+    }
+  }, []);
+
+  const disconnectWallet = useCallback(async () => {
+    try {
+      await window.ethereum?.request({
+        method: "wallet_revokePermissions",
+        params: [{ eth_accounts: {} }],
+      });
+    } catch {
+      // Some wallets do not implement wallet_revokePermissions.
+    } finally {
+      setAccount("");
+      setGate(null);
+      setAttempts([]);
+      setGateIdInput("");
+      clearAutoRefreshTimer();
+      pendingExpectation.current = null;
+      inFlight.current = false;
+      setBusy("");
+      setTx({
+        kind: "idle",
+        message:
+          "Disconnected locally. If MetaMask still shows this site as connected, revoke it in Connected sites.",
+      });
+    }
+  }, [clearAutoRefreshTimer]);
+
+  useEffect(() => {
+    if (!window.ethereum?.on) return;
+
+    const onAccountsChanged = (...args: any[]) => {
+      const accounts = (args[0] ?? []) as string[];
+      const next = accounts[0] ?? "";
+      setAccount(next);
+      clearAutoRefreshTimer();
+      pendingExpectation.current = null;
+      inFlight.current = false;
+      setBusy("");
+      setGate(null);
+      setAttempts([]);
+      setTx({
+        kind: "idle",
+        message: next
+          ? "Wallet account changed. Load your gate again."
+          : "Wallet disconnected.",
+      });
+    };
+
+    const onChainChanged = () => {
+      clearAutoRefreshTimer();
+      pendingExpectation.current = null;
+      inFlight.current = false;
+      setBusy("");
+      setGate(null);
+      setAttempts([]);
+      setTx({
+        kind: "idle",
+        message: "Network changed. Reconnect to StudioNet before writing.",
+      });
+    };
+
+    window.ethereum.on("accountsChanged", onAccountsChanged);
+    window.ethereum.on("chainChanged", onChainChanged);
+
+    return () => {
+      window.ethereum?.removeListener?.("accountsChanged", onAccountsChanged);
+      window.ethereum?.removeListener?.("chainChanged", onChainChanged);
+    };
+  }, [clearAutoRefreshTimer]);
+
+  const refreshGate = useCallback(
+    async (id?: string) => {
+      const target = normalizeGateId(id ?? gate?.gate_id ?? gateIdInput);
+      if (!target) {
+        setTx({ kind: "error", message: "Enter a gate ID first." });
+        return;
+      }
+
+      setLoadingGate(true);
+      try {
+        const next = await getGate(target);
+        setGate(next);
+        setGateIdInput(next.gate_id);
+
+        const pending = pendingExpectation.current;
+        if (pending) {
+          if (pendingSatisfied(next, pending)) {
+            pendingExpectation.current = null;
+            clearAutoRefreshTimer();
+            setBusy("");
+            setTx({
+              kind: "idle",
+              message: "Accepted contract state updated automatically.",
+            });
+          } else {
+            setTx((current) =>
+              current.kind === "submitted"
+                ? {
+                    ...current,
+                    message:
+                      "Transaction is submitted, but the expected accepted state is not visible yet. Wait a little longer and use Load accepted state.",
+                  }
+                : current
+            );
+          }
+        } else {
+          setBusy("");
+          setTx({ kind: "idle", message: "Accepted contract state refreshed." });
+        }
+      } catch (error) {
+        if (pendingExpectation.current) {
+          setTx((current) =>
+            current.kind === "submitted"
+              ? {
+                  ...current,
+                  message:
+                    "Transaction is still pending or accepted state is not available yet. Wait a little longer and use Load accepted state.",
+                }
+              : current
+          );
+        } else {
+          setTx({ kind: "error", message: errorMessage(error) });
+        }
+      } finally {
+        setLoadingGate(false);
+      }
+    },
+    [
+      gate?.gate_id,
+      gateIdInput,
+      pendingSatisfied,
+      clearAutoRefreshTimer,
+    ]
+  );
+
+  const scheduleAcceptedStateRefresh = useCallback(
+    (gateId: string) => {
+      clearAutoRefreshTimer();
+      autoRefreshTimer.current = window.setTimeout(() => {
+        autoRefreshTimer.current = null;
+        void (async () => {
+          await refreshGate(gateId);
+
+          const pending = pendingExpectation.current;
+          if (!pending || normalizeGateId(pending.gateId) !== normalizeGateId(gateId)) {
+            return;
+          }
+
+          const rollback = await leaderRollbackReason(pending.hash);
+          if (!rollback) return;
+
+          pendingExpectation.current = null;
+          inFlight.current = false;
+          setBusy("");
+          setTx({ kind: "error", message: rollback });
+        })();
+      }, 25000);
+    },
+    [clearAutoRefreshTimer, refreshGate]
+  );
+
+  const refreshLog = useCallback(async () => {
+    const target = normalizeGateId(gate?.gate_id ?? gateIdInput);
+    if (!target) {
+      setTx({ kind: "error", message: "Load a gate first." });
+      return;
+    }
+
+    setLoadingLog(true);
+    try {
+      const rows = await getAttempts(target, 0, 20);
+      setAttempts(rows);
+    } catch (error) {
+      setTx({ kind: "error", message: errorMessage(error) });
+    } finally {
+      setLoadingLog(false);
+    }
+  }, [gate?.gate_id, gateIdInput]);
+
+  const submitWrite = useCallback(
+    async (
+      key: string,
+      method: string,
+      args: unknown[],
+      successMessage: string
+    ) => {
+      if (!account) {
+        setTx({ kind: "error", message: "Connect MetaMask first." });
+        return null;
+      }
+
+      if (inFlight.current || busy) return null;
+
+      inFlight.current = true;
+      setBusy(key);
+      setTx({ kind: "signing", message: "Confirm the transaction in MetaMask." });
+
+      try {
+        await connectStudioNet(account);
+        const hash = await writeMethod(account, method, args);
+        setTx({
+          kind: "submitted",
+          message:
+            successMessage +
+            " The transaction is submitted. PrereqLock will check accepted state once automatically after about 25 seconds; manual refresh remains available.",
+          hash,
+        });
+        // Deliberately do NOT clear `busy` here. The write is submitted but the
+        // contract state is not accepted yet; re-enabling the button now is the
+        // duplicate-submission window. It is cleared by refreshGate().
+        inFlight.current = false;
+        return hash;
+      } catch (error) {
+        setTx({ kind: "error", message: errorMessage(error) });
+        inFlight.current = false;
+        setBusy("");
+        return null;
+      }
+    },
+    [account, busy]
+  );
+
+  const createGate = useCallback(async () => {
+    // pyStrip / pyLen, not trim / .length: the contract cleans with Python
+    // str.strip() and measures with len(), which counts code points.
+    const cleanName = pyStrip(name);
+    const cleanAction = pyStrip(actionLabel);
+    const cleanCondition = pyStrip(conditionLabel);
+    const cleanActor = pyStrip(actor);
+
+    if (!cleanName || !cleanAction || !cleanCondition || !cleanActor) {
+      setTx({ kind: "error", message: "Name, both labels and actor address are required." });
+      return;
+    }
+
+    if (!/^0x[0-9a-fA-F]{40}$/.test(cleanActor)) {
+      setTx({ kind: "error", message: "Enter a valid actor address." });
+      return;
+    }
+
+    if (
+      pyLen(cleanName) > MAX_NAME_LENGTH ||
+      pyLen(cleanAction) > MAX_LABEL_LENGTH ||
+      pyLen(cleanCondition) > MAX_LABEL_LENGTH
+    ) {
+      setTx({ kind: "error", message: "One of the fields exceeds its contract limit." });
+      return;
+    }
+
+    if (!account) {
+      setTx({ kind: "error", message: "Connect MetaMask first." });
+      return;
+    }
+
+
+    if (isSameAddress(account, cleanActor)) {
+      setTx({ kind: "error", message: "Actor must use a different wallet from the gate creator." });
+      return;
+    }
+
+    const expectedId = computeGateId(account, cleanName);
+
+    const hash = await submitWrite(
+      "create",
+      "create_gate",
+      [cleanName, cleanAction, cleanCondition, cleanActor],
+      "Gate creation submitted."
+    );
+
+    if (hash) {
+      pendingExpectation.current = {
+        kind: "create",
+        gateId: expectedId,
+        hash,
+      };
+      setGateIdInput(expectedId);
+      setGate(null);
+      setAttempts([]);
+      scheduleAcceptedStateRefresh(expectedId);
+    }
+  }, [
+    account,
+    actionLabel,
+    actor,
+    conditionLabel,
+    name,
+    submitWrite,
+    scheduleAcceptedStateRefresh,
+  ]);
+
+  const submitRule = useCallback(async () => {
+    if (!gate) {
+      setTx({ kind: "error", message: "Load a gate first." });
+      return;
+    }
+
+    const clean = pyCollapse(ruleText);
+
+    if (!clean) {
+      setTx({ kind: "error", message: "Rule text cannot be empty." });
+      return;
+    }
+
+    if (pyLen(clean) > MAX_RULE_TEXT_LENGTH) {
+      setTx({ kind: "error", message: "Rule text exceeds 1200 characters." });
+      return;
+    }
+
+    const localRuleId = computeRuleId(gate.gate_id, clean);
+
+    const hash = await submitWrite(
+      "rule",
+      "submit_rule",
+      [gate.gate_id, clean],
+      `Rule submitted for consensus. Local rule ID: ${short(localRuleId, 10, 8)}.`
+    );
+
+    if (hash) {
+      pendingExpectation.current = {
+        kind: "rule",
+        gateId: gate.gate_id,
+        minAttempts: gate.attempt_count + 1,
+        hash,
+      };
+      scheduleAcceptedStateRefresh(gate.gate_id);
+    }
+  }, [gate, ruleText, submitWrite, scheduleAcceptedStateRefresh]);
+
+  const recordCondition = useCallback(async () => {
+    if (!gate) return;
+
+    const hash = await submitWrite(
+      "condition",
+      "record_condition",
+      [gate.gate_id],
+      "Condition record submitted."
+    );
+
+    if (hash) {
+      pendingExpectation.current = {
+        kind: "condition",
+        gateId: gate.gate_id,
+        hash,
+      };
+      scheduleAcceptedStateRefresh(gate.gate_id);
+    }
+  }, [gate, submitWrite, scheduleAcceptedStateRefresh]);
+
+  const performAction = useCallback(async () => {
+    if (!gate) return;
+
+    const hash = await submitWrite(
+      "action",
+      "perform_action",
+      [gate.gate_id],
+      "Guarded action submitted."
+    );
+
+    if (hash) {
+      pendingExpectation.current = {
+        kind: "action",
+        gateId: gate.gate_id,
+        hash,
+      };
+      scheduleAcceptedStateRefresh(gate.gate_id);
+    }
+  }, [gate, submitWrite, scheduleAcceptedStateRefresh]);
+
+  useEffect(() => {
+    return () => {
+      clearAutoRefreshTimer();
+    };
+  }, [clearAutoRefreshTimer]);
+
+  const stateIndex = useMemo(
+    () => (gate ? STATE_ORDER.indexOf(gate.state) : 0),
+    [gate]
+  );
+
+  return (
+    <div className="app-shell">
+      <div className="ambient ambient-one" />
+      <div className="ambient ambient-two" />
+
+      <header className="topbar">
+        <div className="brand">
+          <img
+            className="project-logo"
+            src="/prereqlock-logo.png"
+            alt="PrereqLock"
+          />
+        </div>
+
+        <div className="top-actions">
+          <a
+            className="network-pill"
+            href={EXPLORER_URL}
+            target="_blank"
+            rel="noreferrer"
+          >
+            <span className="network-dot" />
+            StudioNet
+            <ExternalLink size={13} />
+          </a>
+
+          {account ? (
+            <button className="wallet-button connected" onClick={disconnectWallet}>
+              <Wallet size={16} />
+              {short(account)}
+              <LogOut size={14} />
+            </button>
+          ) : (
+            <button
+              className="wallet-button"
+              onClick={connectWallet}
+              disabled={connecting}
+            >
+              <Wallet size={16} />
+              {connecting ? "Connecting…" : "Connect MetaMask"}
+            </button>
+          )}
+        </div>
+      </header>
+
+      <main className="page">
+        <section className="hero">
+          <div>
+            <h1>
+              A prerequisite should be
+              <span> required, not merely possible.</span>
+            </h1>
+            <p>
+              PrereqLock asks validators one narrow question, then installs a
+              deterministic prerequisite edge only when the rule text actually
+              makes the condition necessary.
+            </p>
+          </div>
+
+          <div className="hero-side">
+            <div className="verdict-pair">
+              <div>
+                <Check size={15} />
+                CONDITION_NECESSARY
+              </div>
+              <div>
+                <X size={15} />
+                CONDITION_NOT_NECESSARY
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <nav className="tabs">
+          <button
+            className={tab === "gate" ? "active" : ""}
+            onClick={() => setTab("gate")}
+          >
+            <LockKeyhole size={16} />
+            Gate
+          </button>
+          <button
+            className={tab === "log" ? "active" : ""}
+            onClick={() => {
+              setTab("log");
+              if (gate) void refreshLog();
+            }}
+          >
+            <BookOpenText size={16} />
+            Rule log
+          </button>
+        </nav>
+
+        <TxBanner tx={tx} />
+
+        {tab === "gate" ? (
+          <div className="gate-layout">
+            <div className="stack">
+              <section className="card">
+                <div className="card-head">
+                  <div>
+                    <span className="section-kicker">01 · CREATE</span>
+                    <h2>Create a prerequisite gate</h2>
+                  </div>
+                  <button
+                    className="ghost-button"
+                    onClick={() => {
+                      setName(DEMO.name);
+                      setActionLabel(DEMO.action);
+                      setConditionLabel(DEMO.condition);
+                    }}
+                  >
+                    <Sparkles size={14} /> Demo values
+                  </button>
+                </div>
+
+                <label>
+                  Gate name
+                  <input
+                    value={name}
+                    onChange={(e) => setName(e.target.value)}
+                    maxLength={MAX_NAME_LENGTH}
+                    placeholder="Cargo departure gate"
+                  />
+                </label>
+
+                <div className="two-fields">
+                  <label>
+                    Guarded action
+                    <input
+                      value={actionLabel}
+                      onChange={(e) => setActionLabel(e.target.value)}
+                      maxLength={MAX_LABEL_LENGTH}
+                      placeholder="cargo leaving the depot"
+                    />
+                  </label>
+                  <label>
+                    Required condition
+                    <input
+                      value={conditionLabel}
+                      onChange={(e) => setConditionLabel(e.target.value)}
+                      maxLength={MAX_LABEL_LENGTH}
+                      placeholder="a countersigned manifest"
+                    />
+                  </label>
+                </div>
+
+                <label>
+                  Actor wallet
+                  <input
+                    className="mono-input"
+                    value={actor}
+                    onChange={(e) => setActor(e.target.value)}
+                    placeholder="0x… wallet allowed to perform the guarded action"
+                  />
+                  <span className="field-help">
+                    Must be different from the creator wallet. The creator records
+                    the condition; this actor performs the action.
+                  </span>
+                </label>
+
+                <button
+                  className="primary-button"
+                  onClick={createGate}
+                  disabled={busy === "create"}
+                >
+                  {busy === "create" ? "Waiting for wallet…" : "Create gate"}
+                  <ArrowRight size={16} />
+                </button>
+              </section>
+
+              <section className="card">
+                <div className="card-head">
+                  <div>
+                    <span className="section-kicker">02 · LOAD</span>
+                    <h2>Open an existing gate</h2>
+                  </div>
+                </div>
+
+                <div className="load-row">
+                  <input
+                    className="mono-input"
+                    value={gateIdInput}
+                    onChange={(e) => setGateIdInput(e.target.value)}
+                    placeholder="64-character gate ID"
+                  />
+                  <button
+                    className="secondary-button"
+                    onClick={() => void refreshGate()}
+                    disabled={loadingGate}
+                  >
+                    <RefreshCw
+                      size={15}
+                      className={loadingGate ? "spin" : ""}
+                    />
+                    {loadingGate ? "Loading…" : "Load accepted state"}
+                  </button>
+                </div>
+
+                {gate && (
+                  <div className="ownership-line">
+                    <span>
+                      Creator <b>{short(gate.creator, 9, 7)}</b>
+                    </span>
+                    <span>
+                      Actor <b>{short(gate.actor, 9, 7)}</b>
+                    </span>
+                    <span
+                      className={
+                        isCreator || isActor
+                          ? "ownership mine"
+                          : "ownership readonly"
+                      }
+                    >
+                      {isCreator ? (
+                        <>
+                          <Check size={13} /> Creator controls
+                        </>
+                      ) : isActor ? (
+                        <>
+                          <Check size={13} /> Actor controls action
+                        </>
+                      ) : (
+                        <>
+                          <Unplug size={13} /> Read only
+                        </>
+                      )}
+                    </span>
+                  </div>
+                )}
+              </section>
+
+              {gate && (
+                <section className="card semantic-card">
+                  <div className="card-head">
+                    <div>
+                      <span className="section-kicker">03 · CONSENSUS</span>
+                      <h2>Submit one operational rule</h2>
+                    </div>
+                    <span className="counter">
+                      {pyLen(pyCollapse(ruleText))}/{MAX_RULE_TEXT_LENGTH}
+                    </span>
+                  </div>
+
+                  <div className="semantic-labels">
+                    <span>
+                      <b>Condition</b> {gate.condition_label}
+                    </span>
+                    <ArrowRight size={15} />
+                    <span>
+                      <b>Action</b> {gate.action_label}
+                    </span>
+                  </div>
+
+                  <textarea
+                    value={ruleText}
+                    onChange={(e) => setRuleText(e.target.value)}
+                    maxLength={MAX_RULE_TEXT_LENGTH}
+                    rows={5}
+                  />
+
+                  <div className="example-row">
+                    <button
+                      className="example-button"
+                      onClick={() => setRuleText(DEMO.necessary)}
+                    >
+                      Required example
+                    </button>
+                    <button
+                      className="example-button"
+                      onClick={() => setRuleText(DEMO.alternative)}
+                    >
+                      Alternative-route example
+                    </button>
+                  </div>
+
+                  <button
+                    className="primary-button"
+                    onClick={submitRule}
+                    disabled={!isCreator || gate.edge_installed || busy === "rule"}
+                  >
+                    <Route size={16} />
+                    {gate.edge_installed
+                      ? "Prerequisite already installed"
+                      : busy === "rule"
+                      ? "Waiting for wallet…"
+                      : "Submit for validator consensus"}
+                  </button>
+                </section>
+              )}
+            </div>
+
+            <div className="stack sticky-stack">
+              <section className="card state-card">
+                <div className="card-head">
+                  <div>
+                    <span className="section-kicker">STATE MACHINE</span>
+                    <h2>{gate ? gate.name : "No gate loaded"}</h2>
+                  </div>
+                  {gate && (
+                    <button
+                      className="icon-button"
+                      title="Refresh accepted state"
+                      onClick={() => void refreshGate(gate.gate_id)}
+                      disabled={loadingGate}
+                    >
+                      <RefreshCw
+                        size={16}
+                        className={loadingGate ? "spin" : ""}
+                      />
+                    </button>
+                  )}
+                </div>
+
+                <StateMachine current={gate?.state ?? "LOCKED"} loaded={!!gate} />
+
+                {gate ? (
+                  <>
+                    <div className="state-grid">
+                      <StateFact
+                        label="Prerequisite edge"
+                        value={gate.edge_installed ? "Installed" : "Not installed"}
+                        positive={gate.edge_installed}
+                      />
+                      <StateFact
+                        label="Condition"
+                        value={gate.condition_met ? "Recorded" : "Not recorded"}
+                        positive={gate.condition_met}
+                      />
+                      <StateFact
+                        label="Action"
+                        value={gate.action_done ? "Done" : "Not done"}
+                        positive={gate.action_done}
+                      />
+                      <StateFact
+                        label="Rule attempts"
+                        value={String(gate.attempt_count)}
+                      />
+                    </div>
+
+                    <div className="action-zone">
+                      <button
+                        className="secondary-button"
+                        onClick={recordCondition}
+                        disabled={
+                          !isActor ||
+                          !gate.edge_installed ||
+                          gate.condition_met ||
+                          gate.action_done ||
+                          busy === "condition"
+                        }
+                      >
+                        <FileKey2 size={15} />
+                        {gate.condition_met
+                          ? "Condition recorded"
+                          : "Record condition"}
+                      </button>
+
+                      <button
+                        className="primary-button"
+                        onClick={performAction}
+                        disabled={
+                          !isCreator ||
+                          !gate.edge_installed ||
+                          !gate.condition_met ||
+                          gate.action_done ||
+                          busy === "action"
+                        }
+                      >
+                        <LockKeyhole size={15} />
+                        {gate.action_done ? "Action complete" : "Perform action"}
+                      </button>
+                    </div>
+
+                    <p className="microcopy">
+                      The creator records the condition; only the separate actor
+                      can perform the guarded action. Accepted state is checked
+                      first. After timeout, the dApp reads the leader receipt only
+                      to surface a finalized rollback.
+                    </p>
+                  </>
+                ) : (
+                  <div className="empty-state">
+                    <Waypoints size={30} />
+                    <p>
+                      Create a gate or paste a gate ID to inspect the on-chain
+                      state machine.
+                    </p>
+                  </div>
+                )}
+              </section>
+
+              <section className="card explainer-card">
+                <span className="section-kicker">WHAT THE AI DECIDES</span>
+                <h3>One semantic bit. Nothing else.</h3>
+                <p>
+                  Validators decide whether the nominated condition is actually
+                  required before the nominated action is permitted.
+                </p>
+                <div className="explain-row good">
+                  <Check size={15} />
+                  Necessary → install prerequisite edge
+                </div>
+                <div className="explain-row neutral">
+                  <X size={15} />
+                  Not necessary → remain locked
+                </div>
+              </section>
+            </div>
+          </div>
+        ) : (
+          <section className="card log-card">
+            <div className="card-head">
+              <div>
+                <span className="section-kicker">RULE LOG</span>
+                <h2>Immutable semantic attempts</h2>
+              </div>
+              <button
+                className="secondary-button"
+                onClick={() => void refreshLog()}
+                disabled={loadingLog}
+              >
+                <RefreshCw size={15} className={loadingLog ? "spin" : ""} />
+                Refresh
+              </button>
+            </div>
+
+            <div className="log-meta">
+              <span>Gate</span>
+              <code>{gate?.gate_id ?? (normalizeGateId(gateIdInput) || "—")}</code>
+            </div>
+
+            {attempts.length ? (
+              <div className="attempt-list">
+                {attempts.map((item) => (
+                  <div className="attempt-row" key={item.rule_id}>
+                    <div className="attempt-number">#{item.attempt_number}</div>
+                    <div className="attempt-main">
+                      <strong
+                        className={
+                          item.installs_edge ? "verdict positive" : "verdict"
+                        }
+                      >
+                        {item.verdict}
+                      </strong>
+                      <span>
+                        Rule ID <code>{short(item.rule_id, 12, 10)}</code>
+                      </span>
+                    </div>
+                    <button
+                      className="icon-button"
+                      title="Copy rule ID"
+                      onClick={() => navigator.clipboard.writeText(item.rule_id)}
+                    >
+                      <Clipboard size={15} />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <div className="empty-state compact">
+                <BookOpenText size={28} />
+                <p>
+                  No accepted attempts loaded. Load a gate, then refresh this
+                  log after consensus finalizes.
+                </p>
+              </div>
+            )}
+          </section>
+        )}
+      </main>
+
+      <footer>
+        <div>
+          <Waypoints size={15} />
+          PrereqLock
+        </div>
+        <span>
+          Contract state is authoritative · StudioNet · Accepted-state matching
+        </span>
+      </footer>
+    </div>
+  );
+}
+
+function TxBanner({ tx }: { tx: TxUiState }) {
+  if (tx.kind === "idle") return null;
+
+  return (
+    <div className={`tx-banner ${tx.kind}`}>
+      <div>
+        {tx.kind === "signing" && <Wallet size={16} />}
+        {tx.kind === "submitted" && <Check size={16} />}
+        {tx.kind === "error" && <X size={16} />}
+        <span>{tx.message}</span>
+      </div>
+      {tx.kind === "submitted" && (
+        <a
+          href={`${EXPLORER_BASE}/tx/${tx.hash}`}
+          target="_blank"
+          rel="noreferrer"
+          title={tx.hash}
+        >
+          <code>{short(tx.hash, 12, 10)}</code>
+          <ExternalLink size={13} />
+        </a>
+      )}
+    </div>
+  );
+}
+
+function StateMachine({
+  current,
+  loaded,
+}: {
+  current: GateState;
+  loaded: boolean;
+}) {
+  const currentIndex = STATE_ORDER.indexOf(current);
+
+  return (
+    <div className={`state-machine ${loaded ? "" : "muted"}`}>
+      {STATE_ORDER.map((state, index) => (
+        <div className="state-node-wrap" key={state}>
+          <div
+            className={[
+              "state-node",
+              index < currentIndex ? "passed" : "",
+              index === currentIndex && loaded ? "current" : "",
+            ]
+              .filter(Boolean)
+              .join(" ")}
+          >
+            {index < currentIndex ? <Check size={14} /> : index + 1}
+          </div>
+          <span className={index === currentIndex && loaded ? "current-label" : ""}>
+            {state}
+          </span>
+          {index < STATE_ORDER.length - 1 && <div className="state-line" />}
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function StateFact({
+  label,
+  value,
+  positive = false,
+}: {
+  label: string;
+  value: string;
+  positive?: boolean;
+}) {
+  return (
+    <div className="state-fact">
+      <span>{label}</span>
+      <strong className={positive ? "positive-text" : ""}>{value}</strong>
+    </div>
+  );
+}
+
+export default App;
